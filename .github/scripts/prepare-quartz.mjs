@@ -147,6 +147,7 @@ function quartzConfig() {
 configuration:
   pageTitle: TTRPG Notes
   pageTitleSuffix: ""
+  baseUrl: savutro.github.io/ttrpg-notes
   enableSPA: true
   enablePopovers: true
   analytics:

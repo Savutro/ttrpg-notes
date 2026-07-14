@@ -28,13 +28,17 @@ export const TtrpgRenderers = () => ({
 .system-card small { color: rgba(255,255,255,0.82); font-family: var(--bodyFont); }
 .ttrpg-leaflet { width: 100%; min-height: 24rem; border: 1px solid var(--lightgray); background: #10100f; margin: 1rem 0; overflow: hidden; }
 .ttrpg-leaflet-map { width: 100%; height: 100%; min-height: inherit; }
-.ttrpg-chronos { margin: 1.25rem 0; border-left: 2px solid var(--secondary); display: grid; gap: 0.85rem; padding-left: 1rem; }
-.ttrpg-chronos-event { display: grid; grid-template-columns: minmax(7rem, 11rem) minmax(0, 1fr); gap: 1rem; align-items: start; }
-.ttrpg-chronos-date { color: var(--secondary); font-weight: 700; font-family: var(--codeFont); }
-.ttrpg-chronos-label { min-width: 0; }
-@media (max-width: 640px) {
-  .ttrpg-chronos-event { grid-template-columns: 1fr; gap: 0.15rem; }
-}
+.ttrpg-chronos-scroll { overflow-x: auto; margin: 1.25rem 0; }
+.ttrpg-chronos { position: relative; min-width: 34rem; height: var(--chronos-height, 14rem); border: 1px solid #66717a; background: #f7ecd8; color: #596874; overflow: hidden; }
+.ttrpg-chronos-gridline { position: absolute; top: 0; bottom: 1.75rem; border-left: 1px solid rgba(84, 92, 98, 0.22); }
+.ttrpg-chronos-axis { position: absolute; left: 0; right: 0; bottom: 1.75rem; border-top: 1px solid #66717a; }
+.ttrpg-chronos-tick { position: absolute; top: 0; height: 1.9rem; border-left: 1px solid rgba(84, 92, 98, 0.24); }
+.ttrpg-chronos-tick span { position: absolute; top: 0.35rem; left: 0.28rem; white-space: nowrap; color: #687884; font-size: 1rem; line-height: 1; }
+.ttrpg-chronos-event { position: absolute; height: 2.35rem; min-width: 5rem; background: #cf5d5c; color: white; display: flex; align-items: center; padding: 0 0.45rem; box-sizing: border-box; font-weight: 700; line-height: 1.1; overflow: hidden; white-space: nowrap; }
+.ttrpg-chronos-event.is-instant { width: auto !important; min-width: min(19rem, calc(100% - var(--chronos-left, 0%))); }
+.ttrpg-chronos-event.is-instant::before { content: ""; position: absolute; left: 0; top: 100%; height: 4.6rem; border-left: 1px solid #cf5d5c; }
+.ttrpg-chronos-label { overflow: hidden; text-overflow: clip; }
+.ttrpg-chronos-empty { padding: 1rem; }
 `,
         },
         {
@@ -106,23 +110,111 @@ function renderLeaflet(source) {
 }
 
 function renderChronos(source) {
-  const events = source
+  const events = parseChronosEvents(source)
+  if (events.length === 0) {
+    return h("div", { className: ["ttrpg-chronos"] }, [
+      h("div", { className: ["ttrpg-chronos-empty"] }, [text(source.trim())]),
+    ])
+  }
+
+  const minEventYear = Math.min(...events.map((event) => event.start))
+  const maxEventYear = Math.max(...events.map((event) => event.end))
+  const axisMin = Math.floor((minEventYear - 20) / 10) * 10
+  const axisMax = Math.ceil((maxEventYear + 5) / 10) * 10
+  const span = Math.max(1, axisMax - axisMin)
+  const lanes = assignChronosLanes(events)
+  const height = Math.max(180, lanes * 46 + 86)
+  const ticks = []
+
+  for (let year = axisMin; year <= axisMax; year += 10) {
+    ticks.push(year)
+  }
+
+  return h("div", { className: ["ttrpg-chronos-scroll"] }, [
+    h("div", { className: ["ttrpg-chronos"], style: `--chronos-height:${height}px` }, [
+      ...ticks.map((year) =>
+        h("div", {
+          className: ["ttrpg-chronos-gridline"],
+          style: `left:${chronosPercent(year, axisMin, span)}%`,
+        }),
+      ),
+      ...events.map((event) => {
+        const left = chronosPercent(event.start, axisMin, span)
+        const width = Math.max(0.8, chronosPercent(event.end, axisMin, span) - left)
+        const top = 8 + event.lane * 46
+        return h("div", {
+          className: ["ttrpg-chronos-event", event.isInstant ? "is-instant" : ""],
+          style: `--chronos-left:${left}%;left:${left}%;top:${top}px;width:${width}%`,
+          title: `${event.label} (${event.rawRange})`,
+        }, [
+          h("span", { className: ["ttrpg-chronos-label"] }, [text(event.label)]),
+        ])
+      }),
+      h("div", { className: ["ttrpg-chronos-axis"] }, ticks.map((year) =>
+        h("div", {
+          className: ["ttrpg-chronos-tick"],
+          style: `left:${chronosPercent(year, axisMin, span)}%`,
+        }, [
+          h("span", {}, [text(String(year))]),
+        ]),
+      )),
+    ]),
+  ])
+}
+
+function parseChronosEvents(source) {
+  return source
     .split(/\r?\n/)
     .map((line) => line.match(/^\s*[-*]\s+\[([^\]]+)\]\s+(.+?)\s*$/))
     .filter(Boolean)
     .map((match) => {
-      const range = match[1].replace("~", " - ")
-      return h("div", { className: ["ttrpg-chronos-event"] }, [
-        h("div", { className: ["ttrpg-chronos-date"] }, [text(range)]),
-        h("div", { className: ["ttrpg-chronos-label"] }, [text(match[2])]),
-      ])
+      const range = parseChronosRange(match[1])
+      if (!range) return undefined
+      return {
+        rawRange: match[1].replace("~", " - "),
+        start: range.start,
+        end: range.end,
+        isInstant: range.isInstant,
+        label: match[2],
+        lane: 0,
+      }
     })
+    .filter(Boolean)
+}
 
-  return h("div", { className: ["ttrpg-chronos"] }, events.length ? events : [
-    h("div", { className: ["ttrpg-chronos-event"] }, [
-      h("div", { className: ["ttrpg-chronos-label"] }, [text(source.trim())]),
-    ]),
-  ])
+function parseChronosRange(value) {
+  const years = String(value).match(/-?\d+/g)?.map(Number) ?? []
+  if (years.length === 0 || !Number.isFinite(years[0])) return undefined
+  const start = years[0]
+  const end = Number.isFinite(years[1]) ? years[1] : start
+  return {
+    start: Math.min(start, end),
+    end: Math.max(start, end),
+    isInstant: years.length === 1,
+  }
+}
+
+function assignChronosLanes(events) {
+  const lanes = []
+  const ordered = [...events].sort((a, b) => a.start - b.start || a.end - b.end)
+
+  for (const event of ordered) {
+    const visualEnd = event.isInstant ? event.start + Math.max(16, event.label.length * 0.72) : event.end
+    let lane = lanes.findIndex((end) => event.start >= end + 1)
+    if (lane === -1) {
+      lane = lanes.length
+      lanes.push(visualEnd)
+    } else {
+      lanes[lane] = visualEnd
+    }
+    event.lane = lane
+  }
+
+  return Math.max(1, lanes.length)
+}
+
+function chronosPercent(year, axisMin, span) {
+  return ((year - axisMin) / span) * 100
 }
 
 function parseConfigBlock(source) {
@@ -234,6 +326,9 @@ function resolveTtrpgAsset(rawPath) {
   const normalizedPath = normalizeQuartzImagePath(rawPath)
   if (!normalizedPath) return ""
   if (/^(https?:)?\\/\\//.test(normalizedPath) || normalizedPath.startsWith("/") || normalizedPath.startsWith("#")) return normalizedPath
+
+  const basePath = window.location.protocol === "file:" ? "" : (document.body.dataset.basepath || "").replace(/\\/$/, "")
+  if (basePath) return basePath + "/" + normalizedPath.replace(/^\\/+/, "")
 
   const slug = document.body.dataset.slug || "index"
   const rootPrefix = "../".repeat(Math.max(0, slug.split("/").length - 1))
