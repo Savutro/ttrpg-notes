@@ -21,7 +21,7 @@ const ignoredDirs = new Set([
   "z_Templates",
 ])
 
-const passthroughFiles = new Set([".gitignore", "CNAME"])
+const passthroughFiles = new Set([".gitignore", "CNAME", "README.md"])
 
 if (!fsSync.existsSync(quartzRoot)) {
   throw new Error(`Quartz checkout not found at ${quartzRoot}`)
@@ -131,7 +131,6 @@ async function folderDetails(relative) {
   const entries = await fs.readdir(absolute, { withFileTypes: true })
   const dirs = []
   const directNotes = []
-  const highlights = []
   let noteCount = 0
   let timelineCount = 0
   let mapCount = 0
@@ -168,16 +167,10 @@ async function folderDetails(relative) {
         hasMap: source.includes("```leaflet"),
       }
       directNotes.push(note)
-      highlights.push(note)
       noteCount += 1
       if (note.hasTimeline) timelineCount += 1
       if (note.hasMap) mapCount += 1
     }
-  }
-
-  const descendantHighlights = await collectHighlights(path.join(contentRoot, relative), relative)
-  for (const highlight of descendantHighlights) {
-    if (!highlights.some((item) => item.href === highlight.href)) highlights.push(highlight)
   }
 
   const name = path.basename(relative)
@@ -193,7 +186,6 @@ async function folderDetails(relative) {
     mapCount,
     dirs,
     directNotes,
-    highlights: highlights.slice(0, 6),
   }
 }
 
@@ -223,42 +215,11 @@ async function publicNoteStats(dir) {
   return { noteCount, sectionCount, timelineCount, mapCount }
 }
 
-async function collectHighlights(dir, baseRelative) {
-  const highlights = []
-  const entries = await fs.readdir(dir, { withFileTypes: true })
-
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name)
-    if (entry.isDirectory() && !ignoredDirs.has(entry.name)) {
-      highlights.push(...await collectHighlights(fullPath, baseRelative))
-      continue
-    }
-    if (!entry.isFile() || !isPublicMarkdown(entry.name)) continue
-
-    const source = await fs.readFile(fullPath, "utf8")
-    if (!source.includes("```chronos") && !source.includes("```leaflet")) continue
-    const noteRelative = path.relative(contentRoot, fullPath)
-    highlights.push({
-      title: noteTitle(source, entry.name),
-      href: noteHref(baseRelative, noteRelative),
-      description: source.includes("```leaflet") ? "Interactive map" : "Timeline",
-      hasTimeline: source.includes("```chronos"),
-      hasMap: source.includes("```leaflet"),
-    })
-  }
-
-  return highlights
-}
-
 function renderFolderIndex(details) {
-  const artwork = details.artwork ? ` data-artwork="${escapeHtml(details.artwork)}"` : ""
   const sectionCards = details.dirs
     .map((dir) => `<a class="portal-card" href="${escapeHtml(dir.href)}"><strong>${escapeHtml(dir.name)}</strong><small>${escapeHtml(dir.description)}</small><span>${dir.noteCount} note${dir.noteCount === 1 ? "" : "s"}</span></a>`)
     .join("\n")
   const noteCards = details.directNotes
-    .map((note) => renderNoteCard(note))
-    .join("\n")
-  const highlights = details.highlights
     .map((note) => renderNoteCard(note))
     .join("\n")
 
@@ -266,20 +227,12 @@ function renderFolderIndex(details) {
 title: ${escapeYaml(details.name)}
 ---
 
-<section class="portal-hero"${artwork}>
+<section class="portal-hero">
   <p class="portal-kicker">${escapeHtml(details.breadcrumb.slice(0, -1).join(" / ") || "Campaign notes")}</p>
   <p class="portal-summary">${escapeHtml(details.description)}</p>
-  <div class="portal-metrics">
-    <span>${details.noteCount} note${details.noteCount === 1 ? "" : "s"}</span>
-    <span>${details.sectionCount} section${details.sectionCount === 1 ? "" : "s"}</span>
-    <span>${details.mapCount} map${details.mapCount === 1 ? "" : "s"}</span>
-    <span>${details.timelineCount} timeline${details.timelineCount === 1 ? "" : "s"}</span>
-  </div>
 </section>
 
 ${sectionCards ? `<section class="portal-section"><h2>Sections</h2><div class="portal-grid">${sectionCards}</div></section>` : ""}
-
-${highlights ? `<section class="portal-section"><h2>Highlights</h2><div class="portal-grid">${highlights}</div></section>` : ""}
 
 ${noteCards ? `<section class="portal-section"><h2>Notes</h2><div class="portal-list">${noteCards}</div></section>` : ""}
 `
@@ -300,14 +253,17 @@ function folderDescription(relative, name) {
   if (key === "age of umbra") return "The public-facing archive for Age of Umbra."
   if (key === "world") return "Places, history, cultures, factions, maps, and timelines."
   if (key === "locations") return "Explorable places and map-linked locations."
+  if (key === "factions") return "Public groups, rival powers, and organizations the party can recognize."
+  if (key === "cultures") return "Local customs, signs, sayings, and table-facing social texture."
   if (key === "campaigns") return "Campaign fronts, introductions, sessions, and player-facing recaps."
+  if (key === "characters") return "Player-facing contacts, companions, rivals, and recurring faces."
   if (key === "rules") return "House rules and table-facing mechanical references."
   if (key === "sessions") return "Session notes and table history."
   return `Public notes in ${relative.split(path.sep).join(" / ")}.`
 }
 
 function folderArtwork(relative) {
-  return relative.split(path.sep)[0] === "Daggerheart" ? quartzSlugPath("Daggerheart/z_Assets/Umbra.png") : ""
+  return ""
 }
 
 function isPublicMarkdown(name) {
@@ -528,12 +484,6 @@ plugins:
       position: left
       priority: 30
       group: toolbar
-  - source: github:quartz-community/breadcrumbs
-    enabled: true
-    layout:
-      position: beforeBody
-      priority: 5
-      condition: not-index
   - source: github:quartz-community/footer
     enabled: true
     options:

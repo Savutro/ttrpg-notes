@@ -241,28 +241,43 @@ function chronosPercent(year, axisMin, span) {
 
 function parseConfigBlock(source) {
   const config = {}
+  let currentKey = ""
   for (const rawLine of source.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith("#")) continue
     const match = line.match(/^([A-Za-z][\w-]*)\s*:\s*(.*)$/)
-    if (!match) continue
+    if (!match) {
+      const listItem = currentKey ? line.match(/^-\s*(.+)$/) : undefined
+      if (listItem) appendConfigValue(config, currentKey, stripQuotes(listItem[1].trim()))
+      continue
+    }
+
     const key = match[1]
     const value = stripQuotes(match[2].trim())
-    if (config[key] === undefined) {
-      config[key] = value
-    } else if (Array.isArray(config[key])) {
-      config[key].push(value)
-    } else {
-      config[key] = [config[key], value]
-    }
+    currentKey = key
+    if (!value) continue
+    appendConfigValue(config, key, value)
   }
   return config
 }
 
+function appendConfigValue(config, key, value) {
+  if (config[key] === undefined) {
+    config[key] = value
+  } else if (Array.isArray(config[key])) {
+    config[key].push(value)
+  } else {
+    config[key] = [config[key], value]
+  }
+}
+
 function firstOf(config, keys, fallback = undefined) {
   for (const key of keys) {
-    if (config[key] === undefined) continue
-    return Array.isArray(config[key]) ? config[key][0] : config[key]
+    if (config[key] === undefined) {
+      continue
+    }
+    if (Array.isArray(config[key]) && config[key].length === 1) return config[key][0]
+    return config[key]
   }
   return fallback
 }
@@ -299,6 +314,12 @@ function splitMultilineValue(value) {
 
 function parseBounds(value) {
   if (!value) return undefined
+  if (Array.isArray(value) && value.length >= 2) {
+    const first = parseCoordinatePair(value[0])
+    const second = parseCoordinatePair(value[1])
+    if (first && second) return [first, second]
+  }
+
   try {
     const parsed = JSON.parse(value)
     if (Array.isArray(parsed) && Array.isArray(parsed[0]) && Array.isArray(parsed[1])) return parsed
@@ -322,6 +343,28 @@ function parseCoordinatePair(value) {
 }
 
 function parseMarker(value) {
+  const parts = splitTopLevelComma(stripMarkerBrackets(value)).map((part) => stripQuotes(part.trim()))
+  if (parts.length >= 4 && Number.isFinite(Number(parts[1])) && Number.isFinite(Number(parts[2]))) {
+    const label = parts.slice(3).join(",").trim()
+    return {
+      type: parts[0] || "default",
+      lat: Number(parts[1]),
+      lng: Number(parts[2]),
+      label: normalizeWikiLabel(label) || "Marker",
+      href: markerHref(label),
+    }
+  }
+  if (parts.length >= 3 && Number.isFinite(Number(parts[0])) && Number.isFinite(Number(parts[1]))) {
+    const label = parts.slice(2).join(",").trim()
+    return {
+      type: "default",
+      lat: Number(parts[0]),
+      lng: Number(parts[1]),
+      label: normalizeWikiLabel(label) || "Marker",
+      href: markerHref(label),
+    }
+  }
+
   const numbers = String(value).match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? []
   if (numbers.length < 2) return undefined
   const label = String(value)
@@ -332,19 +375,63 @@ function parseMarker(value) {
     lat: numbers[0],
     lng: numbers[1],
     label: normalizeWikiLabel(label) || "Marker",
+    href: markerHref(label),
   }
+}
+
+function stripMarkerBrackets(value) {
+  const trimmed = String(value ?? "").trim()
+  return trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.slice(1, -1).trim() : trimmed
+}
+
+function splitTopLevelComma(value) {
+  const parts = []
+  let current = ""
+  let bracketDepth = 0
+  let parenDepth = 0
+  for (const char of String(value ?? "")) {
+    if (char === "[") bracketDepth += 1
+    if (char === "]") bracketDepth = Math.max(0, bracketDepth - 1)
+    if (char === "(") parenDepth += 1
+    if (char === ")") parenDepth = Math.max(0, parenDepth - 1)
+    if (char === "," && bracketDepth === 0 && parenDepth === 0) {
+      parts.push(current.trim())
+      current = ""
+      continue
+    }
+    current += char
+  }
+  if (current.trim()) parts.push(current.trim())
+  return parts
 }
 
 function normalizeWikiTarget(value) {
   const match = String(value).trim().match(/^\[\[(.+?)\]\]$/)
-  const target = match ? match[1] : value
+  const markdown = String(value).trim().match(/^\[.+?\]\((.+?)\)$/)
+  const target = match ? match[1] : markdown ? markdown[1] : value
   return String(target).split("|")[0].trim()
 }
 
 function normalizeWikiLabel(value) {
-  const match = String(value).trim().match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/)
-  if (!match) return String(value).trim()
+  const trimmed = String(value).trim()
+  const markdown = trimmed.match(/^\[(.+?)\]\((.+?)\)$/)
+  if (markdown) return markdown[1].trim()
+  const match = trimmed.match(/^\[\[(.+?)(?:\|(.+?))?\]\]$/)
+  if (!match) return trimmed
   return (match[2] || match[1].split("/").pop() || "").replace(/\.md$/i, "").trim()
+}
+
+function markerHref(value) {
+  const raw = String(value ?? "").trim()
+  if (!/^\[\[.+?\]\]$/.test(raw) && !/^\[.+?\]\(.+?\)$/.test(raw)) return ""
+  const target = normalizeWikiTarget(raw)
+  if (!target || /^(https?:)?\/\//.test(target) || target.startsWith("#")) return target
+  return "/" + target
+    .replace(/\.md$/i, "")
+    .split(/[\\/]+/)
+    .map(slugSegment)
+    .filter(Boolean)
+    .join("/")
 }
 
 function quartzAssetPath(value) {
@@ -445,14 +532,13 @@ const rendererStyles = `
 .system-card span { position: relative; z-index: 1; display: grid; gap: 0.2rem; padding: 1rem; }
 .system-card strong { color: white; font-size: 1.6rem; line-height: 1.1; }
 .system-card small { color: rgba(255,255,255,0.82); font-family: var(--bodyFont); }
-.portal-hero { border: 1px solid var(--lightgray); min-height: 12rem; padding: 1.25rem; margin: 0 0 1.25rem; display: flex; flex-direction: column; justify-content: flex-end; gap: 0.75rem; background: color-mix(in srgb, var(--light) 82%, var(--secondary) 18%); background-size: cover; background-position: center; position: relative; overflow: hidden; }
+.portal-hero { border-left: 3px solid var(--secondary); padding: 0.15rem 0 0.15rem 1rem; margin: 0 0 1.25rem; display: grid; gap: 0.35rem; background: transparent; }
 .portal-hero[data-artwork] { color: white; }
 .portal-hero[data-artwork]::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0,0,0,0.78), rgba(0,0,0,0.2)); }
 .portal-hero > * { position: relative; z-index: 1; }
 .portal-kicker { margin: 0; color: inherit; opacity: 0.82; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.78rem; font-weight: 700; }
 .portal-summary { max-width: 44rem; margin: 0; font-size: 1.05rem; color: inherit; }
-.portal-metrics { display: flex; flex-wrap: wrap; gap: 0.45rem; }
-.portal-metrics span, .portal-card em span { border: 1px solid currentColor; color: inherit; opacity: 0.8; padding: 0.1rem 0.4rem; font-size: 0.78rem; font-style: normal; }
+.portal-card em span { border: 1px solid currentColor; color: inherit; opacity: 0.8; padding: 0.1rem 0.4rem; font-size: 0.78rem; font-style: normal; }
 .portal-section { margin: 1.4rem 0; }
 .popover-hint:has(.portal-hero) .page-listing { display: none; }
 .portal-section h2 { margin-bottom: 0.65rem; font-size: 1.05rem; }
@@ -467,11 +553,14 @@ const rendererStyles = `
 .ttrpg-leaflet { width: 100%; min-height: 24rem; border: 1px solid var(--lightgray); background: #10100f; margin: 1rem 0; overflow: hidden; }
 .ttrpg-leaflet-map { width: 100%; height: 100%; min-height: inherit; }
 .ttrpg-leaflet.is-dark .leaflet-image-layer { filter: invert(1) hue-rotate(180deg) brightness(0.86); }
-.ttrpg-chronos-shell { margin: 1.25rem 0; }
-.ttrpg-chronos-native { border: 1px solid var(--lightgray); background: var(--light); color: var(--dark); overflow: hidden; --chronos-bg-primary: var(--light); --chronos-bg-secondary: color-mix(in srgb, var(--light) 88%, var(--lightgray) 12%); --chronos-text-normal: var(--dark); --chronos-text-muted: var(--gray); --chronos-accent: var(--secondary); --chronos-interactive: var(--secondary); --chronos-interactive-hover: var(--tertiary); --chronos-border: var(--lightgray); --chronos-text-on-accent: white; }
+.ttrpg-chronos-shell { margin: 1.25rem 0; position: relative; overflow-x: auto; }
+.ttrpg-chronos-native { min-width: 46rem; border: 1px solid var(--lightgray); background: var(--light); color: var(--dark); overflow: hidden; --chronos-bg-primary: var(--light); --chronos-bg-secondary: color-mix(in srgb, var(--light) 88%, var(--lightgray) 12%); --chronos-text-normal: var(--dark); --chronos-text-muted: var(--gray); --chronos-accent: var(--secondary); --chronos-interactive: var(--secondary); --chronos-interactive-hover: var(--tertiary); --chronos-border: var(--lightgray); --chronos-text-on-accent: white; }
 .ttrpg-chronos-canvas { min-height: 14rem; }
+.ttrpg-chronos-shell:not([data-chronos-ready]) .ttrpg-chronos-native { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
 .ttrpg-chronos-shell[data-chronos-error] .ttrpg-chronos-native { display: none; }
 .ttrpg-chronos-shell[data-chronos-ready] .ttrpg-chronos-fallback { display: none; }
+.chronos-timeline-container .vis-item, .chronos-timeline-container .vis-item .vis-item-content { overflow: visible !important; white-space: nowrap; max-width: none !important; }
+.chronos-timeline-container .vis-item .vis-item-content { width: max-content !important; }
 .ttrpg-chronos-scroll { overflow-x: auto; }
 .ttrpg-chronos { position: relative; min-width: 34rem; height: var(--chronos-height, 14rem); border: 1px solid #66717a; background: #f7ecd8; color: #596874; overflow: hidden; }
 .ttrpg-chronos-gridline { position: absolute; top: 0; bottom: 1.75rem; border-left: 1px solid rgba(84, 92, 98, 0.22); }
@@ -490,7 +579,7 @@ const rendererStyles = `
   .system-card { min-height: 10rem; border-color: color-mix(in srgb, var(--secondary) 42%, var(--lightgray) 58%); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.16); }
   .system-card span { padding: 0.9rem; }
   .system-card strong { font-size: 1.35rem; }
-  .portal-hero { min-height: 10rem; padding: 1rem; }
+  .portal-hero { padding: 0.1rem 0 0.1rem 0.8rem; }
   .portal-grid { grid-template-columns: 1fr; }
   .ttrpg-chronos { min-width: 38rem; }
 }
@@ -567,7 +656,11 @@ function initTtrpgLeafletMaps() {
     markers.forEach((marker) => {
       if (!Number.isFinite(marker.lat) || !Number.isFinite(marker.lng)) return
       const leafletMarker = L.marker([marker.lat, marker.lng]).addTo(map)
-      if (marker.label) leafletMarker.bindPopup(marker.label)
+      if (marker.label) {
+        const label = escapeTtrpgHtml(marker.label)
+        const popup = marker.href ? '<a href="' + escapeTtrpgHtml(marker.href) + '">' + label + '</a>' : label
+        leafletMarker.bindPopup(popup)
+      }
     })
 
     geojson.forEach((url) => {
@@ -583,9 +676,25 @@ function initTtrpgLeafletMaps() {
   })
 }
 
-function initTtrpgChronos() {
+function escapeTtrpgHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function initTtrpgChronos(attempt = 0) {
+  const pending = document.querySelector(".ttrpg-chronos-shell:not([data-chronos-ready]):not([data-chronos-error])")
+  if (!pending) return
   const ChronosTimeline = window.ChronosTimeline && (window.ChronosTimeline.ChronosTimeline || window.ChronosTimeline)
-  if (!ChronosTimeline || typeof ChronosTimeline.render !== "function") return
+  if (!ChronosTimeline || typeof ChronosTimeline.render !== "function") {
+    if (attempt < 30) {
+      window.clearTimeout(window.__ttrpgChronosRetry)
+      window.__ttrpgChronosRetry = window.setTimeout(() => initTtrpgChronos(attempt + 1), 150)
+    }
+    return
+  }
   document.querySelectorAll(".ttrpg-chronos-shell:not([data-chronos-ready])").forEach((shell) => {
     const canvas = shell.querySelector(".ttrpg-chronos-canvas")
     const sourceElement = shell.querySelector(".ttrpg-chronos-source")
@@ -621,12 +730,25 @@ function initTtrpgChronos() {
         },
       })
       shell._chronosTimeline = timeline
-      shell.dataset.chronosReady = "true"
+      waitForChronosPaint(shell, canvas, timeline)
     } catch (error) {
       shell.dataset.chronosError = error && error.message ? error.message : String(error)
       console.warn("Chronos render failed", error)
     }
   })
+}
+
+function waitForChronosPaint(shell, canvas, timeline, attempt = 0) {
+  if (canvas.querySelector(".vis-item") || canvas.querySelector(".chronos-error-message-container")) {
+    if (timeline && timeline.timeline && typeof timeline.timeline.redraw === "function") timeline.timeline.redraw()
+    shell.dataset.chronosReady = "true"
+    return
+  }
+  if (attempt < 25) {
+    window.setTimeout(() => waitForChronosPaint(shell, canvas, timeline, attempt + 1), 100)
+    return
+  }
+  shell.dataset.chronosError = "Chronos did not paint items"
 }
 
 function withChronosDefaults(source) {

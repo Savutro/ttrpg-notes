@@ -1,5 +1,11 @@
 ```chronos
-- [1789~1799] French Revolution
-- [1791~1804] Haitian Revolution
-- [1776] American Declaration of Independence
+> HEIGHT 280
+> DEFAULTVIEW 1760|1814
+> NOTODAY
+> ORDERBY start
+
+- [1776] #orange American Declaration of Independence
+- [1789~1799] #red French Revolution
+- [1791~1804] #purple Haitian Revolution
+= [1804] Haiti declares independence
 ```
