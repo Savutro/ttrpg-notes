@@ -36,6 +36,8 @@ jobs:
       - name: Build Quartz site
         working-directory: .quartz-site
         run: node quartz/bootstrap-cli.mjs build
+      - name: Preserve custom domain
+        run: cp CNAME .quartz-site/public/CNAME
       - uses: actions/upload-pages-artifact@v3
         with:
           path: .quartz-site/public

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 const vaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..")
 const quartzRoot = path.join(vaultRoot, ".quartz-site")
 const contentRoot = path.join(quartzRoot, "content")
+const siteDomain = readSiteDomain()
 
 const ignoredDirs = new Set([
   ".git",
@@ -20,7 +21,7 @@ const ignoredDirs = new Set([
   "z_Templates",
 ])
 
-const passthroughFiles = new Set([".gitignore"])
+const passthroughFiles = new Set([".gitignore", "CNAME"])
 
 if (!fsSync.existsSync(quartzRoot)) {
   throw new Error(`Quartz checkout not found at ${quartzRoot}`)
@@ -30,6 +31,7 @@ await fs.rm(contentRoot, { recursive: true, force: true })
 await fs.mkdir(contentRoot, { recursive: true })
 
 await copyPublicVault(vaultRoot, contentRoot)
+await writeGeneratedFolderIndexes()
 await fs.writeFile(path.join(contentRoot, "index.md"), await renderSystemPicker(), "utf8")
 await fs.writeFile(path.join(quartzRoot, "quartz.config.yaml"), quartzConfig(), "utf8")
 
@@ -77,8 +79,9 @@ async function renderSystemPicker() {
   const cards = systems
     .map((system) => {
       const artwork = system.artwork ? ` data-artwork="${escapeHtml(system.artwork)}"` : ""
+      const artworkStyle = system.artwork ? ` style="background-image:url('${escapeHtml(system.artwork)}')"` : ""
       const count = system.count === 0 ? "No public notes yet" : `${system.count} public note${system.count === 1 ? "" : "s"}`
-      return `<a class="system-card${system.count === 0 ? " is-empty" : ""}" href="${system.href}"${artwork}><span><strong>${escapeHtml(system.name)}</strong><small>${escapeHtml(count)}</small></span></a>`
+      return `<a class="system-card${system.count === 0 ? " is-empty" : ""}" href="${system.href}"${artwork}${artworkStyle}><span><strong>${escapeHtml(system.name)}</strong><small>${escapeHtml(count)}</small></span></a>`
     })
     .join("\n")
 
@@ -86,14 +89,252 @@ async function renderSystemPicker() {
 title: TTRPG Notes
 ---
 
-# TTRPG Notes
-
 <p class="system-picker-intro">Choose a system to enter the public campaign notes.</p>
 
 <section class="system-grid">
 ${cards}
 </section>
 `
+}
+
+async function writeGeneratedFolderIndexes() {
+  const folders = await collectFolders(contentRoot)
+  folders.sort((a, b) => b.relative.split(path.sep).length - a.relative.split(path.sep).length)
+
+  for (const folder of folders) {
+    if (!folder.relative) continue
+    const indexPath = path.join(folder.absolute, "index.md")
+    if (fsSync.existsSync(indexPath)) continue
+
+    const details = await folderDetails(folder.relative)
+    if (details.noteCount === 0 && details.sectionCount === 0) continue
+
+    await fs.writeFile(indexPath, renderFolderIndex(details), "utf8")
+  }
+}
+
+async function collectFolders(dir, relative = "") {
+  const folders = [{ absolute: dir, relative }]
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || ignoredDirs.has(entry.name)) continue
+    folders.push(...await collectFolders(path.join(dir, entry.name), path.join(relative, entry.name)))
+  }
+
+  return folders
+}
+
+async function folderDetails(relative) {
+  const absolute = path.join(contentRoot, relative)
+  const entries = await fs.readdir(absolute, { withFileTypes: true })
+  const dirs = []
+  const directNotes = []
+  const highlights = []
+  let noteCount = 0
+  let timelineCount = 0
+  let mapCount = 0
+
+  for (const entry of entries) {
+    const entryRelative = path.join(relative, entry.name)
+    const fullPath = path.join(contentRoot, entryRelative)
+
+    if (entry.isDirectory() && !ignoredDirs.has(entry.name)) {
+      const stats = await publicNoteStats(fullPath)
+      if (stats.noteCount > 0 || stats.sectionCount > 0) {
+        dirs.push({
+          name: entry.name,
+          href: contentHref(entryRelative, true),
+          noteCount: stats.noteCount,
+          sectionCount: stats.sectionCount,
+          description: folderDescription(entryRelative, entry.name),
+        })
+        noteCount += stats.noteCount
+        timelineCount += stats.timelineCount
+        mapCount += stats.mapCount
+      }
+      continue
+    }
+
+    if (entry.isFile() && isPublicMarkdown(entry.name)) {
+      const source = await fs.readFile(fullPath, "utf8")
+      const title = noteTitle(source, entry.name)
+      const note = {
+        title,
+        href: noteHref(relative, entryRelative),
+        description: noteDescription(source),
+        hasTimeline: source.includes("```chronos"),
+        hasMap: source.includes("```leaflet"),
+      }
+      directNotes.push(note)
+      highlights.push(note)
+      noteCount += 1
+      if (note.hasTimeline) timelineCount += 1
+      if (note.hasMap) mapCount += 1
+    }
+  }
+
+  const descendantHighlights = await collectHighlights(path.join(contentRoot, relative), relative)
+  for (const highlight of descendantHighlights) {
+    if (!highlights.some((item) => item.href === highlight.href)) highlights.push(highlight)
+  }
+
+  const name = path.basename(relative)
+  return {
+    name,
+    relative,
+    breadcrumb: relative.split(path.sep).filter(Boolean),
+    description: folderDescription(relative, name),
+    artwork: folderArtwork(relative),
+    noteCount,
+    sectionCount: dirs.length,
+    timelineCount,
+    mapCount,
+    dirs,
+    directNotes,
+    highlights: highlights.slice(0, 6),
+  }
+}
+
+async function publicNoteStats(dir) {
+  let noteCount = 0
+  let sectionCount = 0
+  let timelineCount = 0
+  let mapCount = 0
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory() && !ignoredDirs.has(entry.name)) {
+      const stats = await publicNoteStats(fullPath)
+      if (stats.noteCount > 0 || stats.sectionCount > 0) sectionCount += 1
+      noteCount += stats.noteCount
+      timelineCount += stats.timelineCount
+      mapCount += stats.mapCount
+    } else if (entry.isFile() && isPublicMarkdown(entry.name)) {
+      const source = await fs.readFile(fullPath, "utf8")
+      noteCount += 1
+      if (source.includes("```chronos")) timelineCount += 1
+      if (source.includes("```leaflet")) mapCount += 1
+    }
+  }
+
+  return { noteCount, sectionCount, timelineCount, mapCount }
+}
+
+async function collectHighlights(dir, baseRelative) {
+  const highlights = []
+  const entries = await fs.readdir(dir, { withFileTypes: true })
+
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name)
+    if (entry.isDirectory() && !ignoredDirs.has(entry.name)) {
+      highlights.push(...await collectHighlights(fullPath, baseRelative))
+      continue
+    }
+    if (!entry.isFile() || !isPublicMarkdown(entry.name)) continue
+
+    const source = await fs.readFile(fullPath, "utf8")
+    if (!source.includes("```chronos") && !source.includes("```leaflet")) continue
+    const noteRelative = path.relative(contentRoot, fullPath)
+    highlights.push({
+      title: noteTitle(source, entry.name),
+      href: noteHref(baseRelative, noteRelative),
+      description: source.includes("```leaflet") ? "Interactive map" : "Timeline",
+      hasTimeline: source.includes("```chronos"),
+      hasMap: source.includes("```leaflet"),
+    })
+  }
+
+  return highlights
+}
+
+function renderFolderIndex(details) {
+  const artwork = details.artwork ? ` data-artwork="${escapeHtml(details.artwork)}"` : ""
+  const sectionCards = details.dirs
+    .map((dir) => `<a class="portal-card" href="${escapeHtml(dir.href)}"><strong>${escapeHtml(dir.name)}</strong><small>${escapeHtml(dir.description)}</small><span>${dir.noteCount} note${dir.noteCount === 1 ? "" : "s"}</span></a>`)
+    .join("\n")
+  const noteCards = details.directNotes
+    .map((note) => renderNoteCard(note))
+    .join("\n")
+  const highlights = details.highlights
+    .map((note) => renderNoteCard(note))
+    .join("\n")
+
+  return `---
+title: ${escapeYaml(details.name)}
+---
+
+<section class="portal-hero"${artwork}>
+  <p class="portal-kicker">${escapeHtml(details.breadcrumb.slice(0, -1).join(" / ") || "Campaign notes")}</p>
+  <p class="portal-summary">${escapeHtml(details.description)}</p>
+  <div class="portal-metrics">
+    <span>${details.noteCount} note${details.noteCount === 1 ? "" : "s"}</span>
+    <span>${details.sectionCount} section${details.sectionCount === 1 ? "" : "s"}</span>
+    <span>${details.mapCount} map${details.mapCount === 1 ? "" : "s"}</span>
+    <span>${details.timelineCount} timeline${details.timelineCount === 1 ? "" : "s"}</span>
+  </div>
+</section>
+
+${sectionCards ? `<section class="portal-section"><h2>Sections</h2><div class="portal-grid">${sectionCards}</div></section>` : ""}
+
+${highlights ? `<section class="portal-section"><h2>Highlights</h2><div class="portal-grid">${highlights}</div></section>` : ""}
+
+${noteCards ? `<section class="portal-section"><h2>Notes</h2><div class="portal-list">${noteCards}</div></section>` : ""}
+`
+}
+
+function renderNoteCard(note) {
+  const tags = [
+    note.hasMap ? "<span>Map</span>" : "",
+    note.hasTimeline ? "<span>Timeline</span>" : "",
+  ].filter(Boolean).join("")
+  return `<a class="portal-card" href="${escapeHtml(note.href)}"><strong>${escapeHtml(note.title)}</strong><small>${escapeHtml(note.description)}</small>${tags ? `<em>${tags}</em>` : ""}</a>`
+}
+
+function folderDescription(relative, name) {
+  const key = name.toLowerCase()
+  if (key === "daggerheart") return "Campaigns, rules, maps, and setting notes for Daggerheart."
+  if (key === "d&d") return "Public notes for D&D games."
+  if (key === "age of umbra") return "The public-facing archive for Age of Umbra."
+  if (key === "world") return "Places, history, cultures, factions, maps, and timelines."
+  if (key === "locations") return "Explorable places and map-linked locations."
+  if (key === "campaigns") return "Campaign fronts, introductions, sessions, and player-facing recaps."
+  if (key === "rules") return "House rules and table-facing mechanical references."
+  if (key === "sessions") return "Session notes and table history."
+  return `Public notes in ${relative.split(path.sep).join(" / ")}.`
+}
+
+function folderArtwork(relative) {
+  return relative.split(path.sep)[0] === "Daggerheart" ? quartzSlugPath("Daggerheart/z_Assets/Umbra.png") : ""
+}
+
+function isPublicMarkdown(name) {
+  return name.toLowerCase().endsWith(".md") && name.toLowerCase() !== "index.md"
+}
+
+function noteTitle(source, fileName) {
+  const heading = source.match(/^#\s+(.+)$/m)
+  return heading ? heading[1].trim() : fileName.replace(/\.md$/i, "")
+}
+
+function noteDescription(source) {
+  const description = source.match(/^---[\s\S]*?\ndescription:\s*(.+?)\n[\s\S]*?---/m)
+  return description ? stripYamlString(description[1]).slice(0, 120) : "Open note"
+}
+
+function noteHref(fromFolderRelative, noteRelative) {
+  return contentHref(noteRelative, false)
+}
+
+function contentHref(relativePath, isDirectory) {
+  const normalized = relativePath.replace(/\\/g, "/")
+  const slug = normalized
+    .split("/")
+    .map((segment) => segment.toLowerCase().endsWith(".md") ? segment.slice(0, -3) : segment)
+    .map((segment) => quartzSlugPath(segment))
+    .join("/")
+  return `/${slug}${isDirectory ? "/" : ""}`
 }
 
 async function countMarkdownFiles(dir) {
@@ -128,16 +369,18 @@ async function ensureEmptySystemIndex(systemName) {
 function quartzSlugPath(vaultPath) {
   return vaultPath
     .split(/[\\/]+/)
-    .map((segment) =>
-      segment
+    .map((segment) => {
+      const normalized = segment
         .trim()
         .toLowerCase()
         .replace(/&/g, "-and-")
         .replace(/\s+/g, "-")
-        .replace(/[^a-z0-9_-]+/g, "-")
+      const hasExtension = /\.[a-z0-9]{2,5}$/i.test(normalized)
+      return normalized
+        .replace(hasExtension ? /[^a-z0-9._-]+/g : /[^a-z0-9_-]+/g, "-")
         .replace(/-+/g, "-")
-        .replace(/^-|-$/g, ""),
-    )
+        .replace(/^-|-$/g, "")
+    })
     .filter(Boolean)
     .join("/")
 }
@@ -147,7 +390,7 @@ function quartzConfig() {
 configuration:
   pageTitle: TTRPG Notes
   pageTitleSuffix: ""
-  baseUrl: savutro.github.io/ttrpg-notes
+  baseUrl: ${siteDomain}
   enableSPA: true
   enablePopovers: true
   analytics:
@@ -307,6 +550,20 @@ plugins:
     options:
       links: {}
 `
+}
+
+function readSiteDomain() {
+  const cnamePath = path.join(vaultRoot, "CNAME")
+  if (!fsSync.existsSync(cnamePath)) return "notes.savutro.dev"
+  return fsSync.readFileSync(cnamePath, "utf8").trim() || "notes.savutro.dev"
+}
+
+function escapeYaml(value) {
+  return JSON.stringify(String(value))
+}
+
+function stripYamlString(value) {
+  return String(value).trim().replace(/^["']|["']$/g, "")
 }
 
 function escapeHtml(value) {
