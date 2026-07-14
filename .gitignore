@@ -1,0 +1,17 @@
+# Obsidian local state and personal settings
+.obsidian/
+.trash/
+
+# Never commit private or template notes. Obsidian Sync can still sync them.
+z_Private/
+z_Templates/
+
+# Generated GitHub Pages output
+.site/
+_site/
+.quartz-site/
+
+# Local tooling noise
+node_modules/
+.DS_Store
+Thumbs.db

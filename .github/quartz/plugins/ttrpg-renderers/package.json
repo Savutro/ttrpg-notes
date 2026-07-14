@@ -1,0 +1,24 @@
+{
+  "name": "ttrpg-renderers",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "quartz": {
+    "name": "ttrpg-renderers",
+    "displayName": "TTRPG Renderers",
+    "description": "Renders selected Obsidian TTRPG plugin code blocks for Quartz.",
+    "version": "0.1.0",
+    "category": "transformer",
+    "quartzVersion": ">=5.0.0",
+    "defaultOrder": 45,
+    "defaultEnabled": true,
+    "defaultOptions": {}
+  }
+}

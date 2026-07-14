@@ -1,0 +1,51 @@
+name: Publish TTRPG notes
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Clone Quartz
+        run: git clone https://github.com/jackyzha0/quartz.git .quartz-site
+      - name: Install Quartz dependencies
+        working-directory: .quartz-site
+        run: npm ci
+      - name: Prepare vault content for Quartz
+        run: node .github/scripts/prepare-quartz.mjs
+      - name: Install Quartz plugins
+        working-directory: .quartz-site
+        run: node quartz/bootstrap-cli.mjs plugin install --from-config
+      - name: Build Quartz site
+        working-directory: .quartz-site
+        run: node quartz/bootstrap-cli.mjs build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .quartz-site/public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
