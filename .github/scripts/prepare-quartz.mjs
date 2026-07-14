@@ -65,7 +65,6 @@ async function renderSystemPicker() {
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".") || ignoredDirs.has(entry.name)) continue
     const notes = await countMarkdownFiles(path.join(vaultRoot, entry.name))
-    if (notes === 0) await ensureEmptySystemIndex(entry.name)
     systems.push({
       name: entry.name,
       count: notes,
@@ -81,7 +80,9 @@ async function renderSystemPicker() {
       const artwork = system.artwork ? ` data-artwork="${escapeHtml(system.artwork)}"` : ""
       const artworkStyle = system.artwork ? ` style="background-image:url('${escapeHtml(system.artwork)}')"` : ""
       const count = system.count === 0 ? "No public notes yet" : `${system.count} public note${system.count === 1 ? "" : "s"}`
-      return `<a class="system-card${system.count === 0 ? " is-empty" : ""}" href="${system.href}"${artwork}${artworkStyle}><span><strong>${escapeHtml(system.name)}</strong><small>${escapeHtml(count)}</small></span></a>`
+      const content = `<span><strong>${escapeHtml(system.name)}</strong><small>${escapeHtml(count)}</small></span>`
+      if (system.count === 0) return `<div class="system-card is-empty"${artwork}${artworkStyle}>${content}</div>`
+      return `<a class="system-card" href="${system.href}"${artwork}${artworkStyle}>${content}</a>`
     })
     .join("\n")
 
@@ -352,18 +353,6 @@ async function countMarkdownFiles(dir) {
   }
 
   return count
-}
-
-async function ensureEmptySystemIndex(systemName) {
-  const indexPath = path.join(contentRoot, systemName, "index.md")
-  if (fsSync.existsSync(indexPath)) return
-
-  await fs.mkdir(path.dirname(indexPath), { recursive: true })
-  await fs.writeFile(
-    indexPath,
-    `---\ntitle: ${systemName}\n---\n\n# ${systemName}\n\nNo public notes yet.\n`,
-    "utf8",
-  )
 }
 
 function quartzSlugPath(vaultPath) {
